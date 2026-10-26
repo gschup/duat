@@ -75,7 +75,7 @@ impl Layout {
                 panel: Rect::new(2.0 * m + size, m, w - size - 3.0 * m, h - 2.0 * m),
             }
         } else {
-            let panel_h = 12.0 * ROW;
+            let panel_h = 14.0 * ROW;
             let size = (w - 2.0 * m).min(h - panel_h - 3.0 * m).max(120.0);
             Layout {
                 board: Rect::new((w - size) / 2.0, m, size, size),
@@ -458,6 +458,19 @@ impl App {
         );
         line(
             "Keys: arrows rotate/move, Enter ends turn, Z undoes.",
+            16.0,
+            MUTED,
+            &mut y,
+        );
+        y += 8.0;
+        line(
+            "Unofficial fan project, not affiliated",
+            16.0,
+            MUTED,
+            &mut y,
+        );
+        line(
+            "with Unphazed Games (unphazedgames.com).",
             16.0,
             MUTED,
             &mut y,

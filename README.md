@@ -5,6 +5,10 @@ A solver for *Duat*, a two-player abstract game.
 - [Duat on BoardGameGeek](https://boardgamegeek.com/boardgame/440609/duat)
 - [Unphazed Games](https://unphazedgames.com/) (publisher)
 
+This is an unofficial fan project, not affiliated with or endorsed by Unphazed
+Games. Duat and its name belong to its publisher; if you enjoy the game, get a
+copy from them.
+
 ## Rules (as implemented)
 
 - 4x4 board, three scarabs per player, each facing one of four directions.
