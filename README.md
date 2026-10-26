@@ -19,7 +19,9 @@ A solver for *Duat*, a two-player abstract game.
     even when repeated on the same piece.
 - Pushing an opponent's piece off the board wins immediately.
 - Pushing your **own** piece off the board loses immediately. The rulebook does
-  not cover this case; this is our house rule.
+  not cover this case; this is our house rule. Making such pushes illegal
+  instead gives exactly the same solution: rotating is always possible, so the
+  suicide push is never forced, and it is never better than any alternative.
 - The starting player picks a colour; the engine fixes White to move first,
   which loses nothing since the rules are colour-symmetric.
 - There is no draw rule (the rulebook suggests restarting if both players agree
