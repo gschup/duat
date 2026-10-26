@@ -383,6 +383,7 @@ impl State {
         t
     }
 
+    #[cfg(feature = "solver")]
     pub(crate) fn with_turn(mut self, side: Color, step: u8) -> State {
         self.side = side;
         self.step = step;

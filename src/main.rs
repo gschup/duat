@@ -1,10 +1,11 @@
 use duat::game::{State, perft};
-use duat::solve::{self, Solution};
+use duat::solve;
+use duat::table::Table;
 use std::path::Path;
 use std::time::Instant;
 
 const USAGE: &str = "usage: duat perft [depth] | duat solve [table-file] | duat line [table-file]";
-const DEFAULT_TABLE: &str = "tables/duat.bin";
+const DEFAULT_TABLE: &str = "tables/duat.table.gz";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -43,21 +44,31 @@ fn run_solve(out: &Path) {
     println!("\n{start}\nvalue: {:?}", solution.value(&start));
 
     let t = Instant::now();
-    match solution.verify(10_000_000) {
-        Ok(()) => println!("verified 10M sampled states ({:.0?})", t.elapsed()),
-        Err(s) => println!("INCONSISTENT state:\n{s}"),
+    let table = solution.table();
+    let checks = solution
+        .verify(10_000_000)
+        .and_then(|()| solution.verify_table(&table, 1_000_000));
+    if let Err(s) = checks {
+        eprintln!("INCONSISTENT state:\n{s}");
+        std::process::exit(1);
     }
+    println!(
+        "verified 10M sampled states and 1M table lookups ({:.0?})",
+        t.elapsed()
+    );
 
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir).expect("cannot create table directory");
     }
-    solution.save(out).expect("cannot write table");
+    let file = std::fs::File::create(out).expect("cannot create table file");
+    table.write_gz(file).expect("cannot write table");
     println!("saved to {}", out.display());
 }
 
 /// Plays out perfect play from the start, one turn per printed board.
 fn run_line(table: &Path) {
-    let solution = Solution::load(table).expect("cannot read table; run `duat solve` first");
+    let bytes = std::fs::read(table).expect("cannot read table; run `duat solve` first");
+    let solution = Table::read_gz(&bytes).expect("corrupt table");
     let mut s = State::start();
     println!("{s}\nvalue: {:?}\n", solution.value(&s));
     let mut turn = 1;

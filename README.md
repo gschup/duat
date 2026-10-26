@@ -38,10 +38,18 @@ for the side to move, 83M losses and 10M draws. The longest forced win takes
 ## Usage
 
 ```sh
-cargo run --release -- solve   # solve all states (~30 s, ~4 GB RAM), write tables/duat.bin (~800 MB)
+cargo run --release -- solve   # solve all states (~30 s, ~4 GB RAM), write tables/duat.table.gz (~10 MB)
 cargo run --release -- line    # replay perfect play from the start using the table
 cargo run --release -- perft 3 # move-generator check: turn-level perft counts
+
+cargo run --release --bin play --features gui   # interactive board in a native window
+web/build.sh && python3 -m http.server -d dist  # the same board in the browser, at localhost:8000
 ```
+
+The interactive board starts as human vs human. Hints (best action and
+perfect-play outcome) and auto play can be toggled per side at any time;
+with both sides on auto it plays out perfect games. Pushes to `main` deploy it
+to GitHub Pages via `.github/workflows/pages.yml`, which solves the game in CI.
 
 ## Layout
 
@@ -51,4 +59,8 @@ cargo run --release -- perft 3 # move-generator check: turn-level perft counts
 - `src/index.rs`: index of boards from the mover's perspective, reduced by
   colour and board symmetry (90,202,112 slots).
 - `src/solve.rs`: retrograde solver over single-action states (board + actions
-  taken this turn), with distance-to-end, best moves and a consistency check.
+  taken this turn), with distance-to-end and consistency checks.
+- `src/table.rs`: compact solution (turn-start boards only, 2 bytes each,
+  gzipped); mid-turn values come from searching the rest of the turn.
+- `src/bin/play.rs`: macroquad board for desktop and wasm; `web/` holds the
+  page and the site build script.

@@ -2,6 +2,30 @@
 name = "duat"
 version = "0.1.0"
 edition = "2024"
+default-run = "duat"
 
 [dependencies]
-rayon = "1.12.0"
+flate2 = "1.1.10"
+macroquad = { version = "0.4.16", optional = true }
+rayon = { version = "1.12.0", optional = true }
+
+[features]
+default = ["solver"]
+# The retrograde solver and the `duat` CLI. Needs threads, so not for wasm.
+solver = ["dep:rayon"]
+# The interactive board (`play`), native window or browser.
+gui = ["dep:macroquad"]
+
+[[bin]]
+name = "duat"
+path = "src/main.rs"
+required-features = ["solver"]
+
+[[bin]]
+name = "play"
+path = "src/bin/play.rs"
+required-features = ["gui"]
+
+[profile.release]
+# Smaller and faster binaries, mostly for the wasm build.
+lto = true

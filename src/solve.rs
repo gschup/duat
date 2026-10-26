@@ -13,15 +13,13 @@
 //! children, making it a loss when none are left. States never resolved are
 //! draws: neither side can force a win.
 
-use std::fs::File;
-use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::path::Path;
 use std::sync::atomic::{AtomicU8, AtomicU16, Ordering::Relaxed};
 
 use rayon::prelude::*;
 
-use crate::game::{Action, Color, State};
+use crate::game::{Color, State};
 use crate::index::{NUM_POSITIONS, from_index, index, is_canonical};
+use crate::table::{Table, Value};
 
 /// Actions already taken in a turn: 0, 1 or 2.
 const STEPS: u32 = 3;
@@ -33,15 +31,6 @@ const STATUS: u8 = 0xC0;
 const WIN: u8 = 0x40;
 const LOSS: u8 = 0x80;
 const UNUSED: u8 = 0xC0;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Value {
-    /// The side to move wins in this many actions.
-    Win(u16),
-    /// The side to move loses in this many actions.
-    Loss(u16),
-    Draw,
-}
 
 #[derive(Debug, Default)]
 pub struct Stats {
@@ -58,6 +47,11 @@ pub struct Solution {
 
 pub fn slot(s: &State) -> u32 {
     s.step() as u32 * NUM_POSITIONS + index(s)
+}
+
+/// Spreads sample number `n` pseudo-randomly over the table.
+fn sample_slot(n: u64) -> u32 {
+    ((n.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 20) % TABLE_SIZE as u64) as u32
 }
 
 fn state_at(slot: u32) -> State {
@@ -194,7 +188,10 @@ pub fn solve(progress: impl Fn(u16, usize) + Sync) -> Solution {
 impl Solution {
     /// The value of a non-terminal state for its side to move.
     pub fn value(&self, s: &State) -> Value {
-        let i = slot(s) as usize;
+        self.value_at(slot(s) as usize)
+    }
+
+    fn value_at(&self, i: usize) -> Value {
         match self.entries[i] & STATUS {
             WIN => Value::Win(self.dist[i]),
             LOSS => Value::Loss(self.dist[i]),
@@ -202,32 +199,14 @@ impl Solution {
         }
     }
 
-    /// An optimal action: the fastest win, the slowest loss, or one keeping a draw.
-    pub fn best_action(&self, s: &State) -> Action {
-        let score = |a: Action| {
-            let mut c = *s;
-            c.apply(a);
-            if let Some(winner) = c.winner() {
-                return if winner == s.side_to_move() {
-                    i32::MAX
-                } else {
-                    i32::MIN
-                };
-            }
-            let sign = if c.side_to_move() == s.side_to_move() {
-                1
-            } else {
-                -1
-            };
-            match self.value(&c) {
-                Value::Win(d) => sign * (i32::from(u16::MAX) + 1 - i32::from(d)),
-                Value::Loss(d) => -sign * (i32::from(u16::MAX) + 1 - i32::from(d)),
-                Value::Draw => 0,
-            }
-        };
-        s.legal_actions()
-            .max_by_key(|&a| score(a))
-            .expect("no legal action")
+    /// The compact table of turn-start values. Unused slots read as draws.
+    pub fn table(&self) -> Table {
+        Table::from_entries(
+            (0..NUM_POSITIONS as usize)
+                .into_par_iter()
+                .map(|i| self.value_at(i).encode())
+                .collect(),
+        )
     }
 
     pub fn stats(&self) -> Stats {
@@ -260,12 +239,11 @@ impl Solution {
         (0..samples)
             .into_par_iter()
             .try_for_each_init(Vec::new, |children, n| {
-                // A multiplicative hash spreads the samples over the table.
-                let i = (n.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 20) % TABLE_SIZE as u64;
+                let i = sample_slot(n);
                 if self.entries[i as usize] & STATUS == UNUSED {
                     return Ok(());
                 }
-                let s = state_at(i as u32);
+                let s = state_at(i);
                 let consistent = if child_slots(&s, children) {
                     self.value(&s) == Value::Win(1)
                 } else {
@@ -300,30 +278,21 @@ impl Solution {
             })
     }
 
-    /// Writes the raw tables: one status byte per slot, then one
-    /// little-endian `u16` distance per slot.
-    pub fn save(&self, path: &Path) -> io::Result<()> {
-        let mut w = BufWriter::new(File::create(path)?);
-        w.write_all(&self.entries)?;
-        for d in &self.dist {
-            w.write_all(&d.to_le_bytes())?;
-        }
-        w.flush()
-    }
-
-    pub fn load(path: &Path) -> io::Result<Solution> {
-        let mut r = BufReader::new(File::open(path)?);
-        let mut entries = vec![0; TABLE_SIZE];
-        r.read_exact(&mut entries)?;
-        let mut raw = vec![0; 2 * TABLE_SIZE];
-        r.read_exact(&mut raw)?;
-        let dist = raw
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|&b| u16::from_le_bytes(b))
-            .collect();
-        Ok(Solution { entries, dist })
+    /// Checks that `table` reproduces this solution's values, including in
+    /// the middle of turns, on `samples` pseudo-random states.
+    pub fn verify_table(&self, table: &Table, samples: u64) -> Result<(), State> {
+        (0..samples).into_par_iter().try_for_each(|n| {
+            let i = sample_slot(n);
+            if self.entries[i as usize] & STATUS == UNUSED {
+                return Ok(());
+            }
+            let s = state_at(i);
+            if table.value(&s) == self.value(&s) {
+                Ok(())
+            } else {
+                Err(s)
+            }
+        })
     }
 }
 
