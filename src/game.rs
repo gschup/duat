@@ -107,6 +107,43 @@ pub fn squares(mut bb: u16) -> impl Iterator<Item = u8> {
     })
 }
 
+/// Number of symmetries of the square board. Symmetry `g` mirrors the columns
+/// if `g & 4` is set, then turns the board `g & 3` quarter turns clockwise.
+pub const NUM_SYMS: usize = 8;
+
+const SYM_SQUARE: [[u8; SQUARES]; NUM_SYMS] = {
+    let mut table = [[0; SQUARES]; NUM_SYMS];
+    let mut g = 0;
+    while g < NUM_SYMS {
+        let mut sq = 0;
+        while sq < SQUARES {
+            let (mut row, mut col) = (sq / 4, sq % 4);
+            if g & 4 != 0 {
+                col = 3 - col;
+            }
+            let mut turns = 0;
+            while turns < g & 3 {
+                (row, col) = (col, 3 - row);
+                turns += 1;
+            }
+            table[g][sq] = (row * 4 + col) as u8;
+            sq += 1;
+        }
+        g += 1;
+    }
+    table
+};
+
+fn sym_dir(g: usize, d: Dir) -> Dir {
+    let mirrored = if g & 4 != 0 { 4 - d as u32 } else { d as u32 };
+    Dir::from_bits(mirrored + (g & 3) as u32)
+}
+
+/// Image of a bitboard under symmetry `g`.
+pub fn sym_bitboard(g: usize, bb: u16) -> u16 {
+    squares(bb).fold(0, |acc, sq| acc | bit(SYM_SQUARE[g][sq as usize]))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ActionKind {
     Move = 0,
@@ -328,6 +365,70 @@ impl State {
         }
     }
 
+    /// The image of this state under board symmetry `g` (see [`NUM_SYMS`]).
+    /// The rules only depend on adjacency and facing, so they commute with it.
+    pub fn transformed(&self, g: usize) -> State {
+        let mut t = State {
+            pieces: [0; 2],
+            dirs: 0,
+            ..*self
+        };
+        for sq in squares(self.occupied()) {
+            t.put(
+                SYM_SQUARE[g][sq as usize],
+                self.owner(sq),
+                sym_dir(g, self.dir_at(sq)),
+            );
+        }
+        t
+    }
+
+    pub(crate) fn with_turn(mut self, side: Color, step: u8) -> State {
+        self.side = side;
+        self.step = step;
+        self
+    }
+
+    /// Calls `f` with every board from which a single piece action of `mover`
+    /// produces this board. Side to move and step are left unchanged; the
+    /// caller sets them. Actions that push a piece off the board end the game,
+    /// so they never lead to a non-terminal board and are not undone here.
+    pub fn for_each_unaction(&self, mover: Color, mut f: impl FnMut(State)) {
+        let occ = self.occupied();
+        for sq in squares(self.pieces(mover)) {
+            let d = self.dir_at(sq);
+            for prev in [d.ccw(), d.cw()] {
+                let mut p = *self;
+                p.set_dir(sq, prev);
+                f(p);
+            }
+            let Some(back) = neighbor(sq, d.opposite()) else {
+                continue;
+            };
+            if occ & bit(back) != 0 {
+                continue;
+            }
+            let mut p = *self;
+            let (c, pd) = p.take(sq);
+            p.put(back, c, pd);
+            f(p);
+            // Undo pushes of the first k pieces of the row in front, for each k
+            // until the row ends or a piece faces the pusher.
+            let mut prev_sq = sq;
+            let mut cur = neighbor(sq, d);
+            while let Some(row_sq) = cur.filter(|&s| occ & bit(s) != 0) {
+                if self.dir_at(row_sq) == d.opposite() {
+                    break;
+                }
+                let (c, pd) = p.take(row_sq);
+                p.put(prev_sq, c, pd);
+                f(p);
+                prev_sq = row_sq;
+                cur = neighbor(row_sq, d);
+            }
+        }
+    }
+
     /// Number of pieces pushed by the piece on `sq`, or `None` if it cannot push.
     fn push_len(&self, sq: u8) -> Option<usize> {
         let d = self.dir_at(sq);
@@ -535,6 +636,17 @@ mod tests {
             Color::White,
         );
         assert!(is_legal(&s, action(4, ActionKind::Push)));
+    }
+
+    #[test]
+    fn rules_commute_with_symmetries() {
+        let s = State::start();
+        let succ = s.successors();
+        for g in 0..NUM_SYMS {
+            let mut mapped: Vec<State> = succ.iter().map(|n| n.transformed(g)).collect();
+            mapped.sort_unstable();
+            assert_eq!(s.transformed(g).successors(), mapped, "symmetry {g}");
+        }
     }
 
     #[test]

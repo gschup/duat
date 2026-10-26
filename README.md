@@ -24,11 +24,29 @@ A solver for *Duat*, a two-player abstract game.
   which loses nothing since the rules are colour-symmetric.
 - There is no draw rule (the rulebook suggests restarting if both players agree
   neither can win); the solver treats endless games as draws.
+
+## Result
+
+Duat is strongly solved under these rules: **the starting player wins**, in 45
+actions (15 full turns) against the longest defence. Of the 246M distinct
+states (by colour and board symmetry, at every step of a turn), 153M are wins
+for the side to move, 83M losses and 10M draws. The longest forced win takes
+178 actions.
+
+## Usage
+
+```sh
+cargo run --release -- solve   # solve all states (~30 s, ~4 GB RAM), write tables/duat.bin (~800 MB)
+cargo run --release -- line    # replay perfect play from the start using the table
+cargo run --release -- perft 3 # move-generator check: turn-level perft counts
+```
+
 ## Layout
 
 - `src/game.rs`: state (two `u16` bitboards + 2-bit facings per square),
-  action encoding (65 dense indices), rules, turn-level successors, perft.
-- `src/index.rs`: perfect index of turn-start positions (656,015,360 slots)
-  from the mover's perspective, for solver tables.
-
-`cargo run --release -- <depth>` prints perft counts from the start position.
+  action encoding (65 dense indices), rules, board symmetries, un-actions,
+  turn-level successors, perft.
+- `src/index.rs`: index of boards from the mover's perspective, reduced by
+  colour and board symmetry (90,202,112 slots).
+- `src/solve.rs`: retrograde solver over single-action states (board + actions
+  taken this turn), with distance-to-end, best moves and a consistency check.

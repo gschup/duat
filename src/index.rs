@@ -1,13 +1,22 @@
-//! Perfect index for non-terminal positions at the start of a turn, for
+//! Index of non-terminal boards, reduced by colour and board symmetry, for
 //! addressing solver tables.
 //!
-//! Positions are seen from the side to move ("me" vs "opponent"). The rules
-//! treat both colours alike, so a position and its colour-swapped twin share
-//! one index. Layout: `(rank(me) * OPP_SETS + rank(opp)) * 4096 + facings`,
-//! where the opponent's squares are ranked among the 13 squares I leave free
-//! and the facings are 2 bits per piece, mine first, in square order.
+//! Boards are seen from the side to move ("me" vs "opponent"). The rules treat
+//! both colours alike, so a board and its colour-swapped twin share one index,
+//! and the rules commute with the 8 symmetries of the square, so symmetric
+//! boards share one too.
+//!
+//! Layout: `orbit(me) * REST + rank(opp) * 4096 + facings`. `orbit(me)` numbers
+//! the 77 symmetry classes of my three squares; the board is first transformed
+//! so my squares are the class representative. The opponent's squares are
+//! ranked among the 13 squares I leave free, and the facings are 2 bits per
+//! piece, mine first, in square order. When several symmetries map my squares
+//! to the representative, the smallest resulting index is used, so a few slots
+//! are never used; see [`is_canonical`].
 
-use crate::game::{Color, Dir, SQUARES, State, squares};
+use std::sync::LazyLock;
+
+use crate::game::{Color, Dir, NUM_SYMS, SQUARES, State, squares, sym_bitboard};
 
 const BINOM: [[u32; 4]; SQUARES + 1] = {
     let mut t = [[0; 4]; SQUARES + 1];
@@ -29,10 +38,45 @@ const BINOM: [[u32; 4]; SQUARES + 1] = {
 };
 
 /// Ways to place my three pieces.
-pub const ME_SETS: u32 = BINOM[16][3];
+const ME_SETS: usize = BINOM[16][3] as usize;
+/// Symmetry classes of my three squares.
+pub const ORBITS: u32 = 77;
 /// Ways to place the opponent's three pieces on the remaining squares.
 pub const OPP_SETS: u32 = BINOM[13][3];
-pub const NUM_POSITIONS: u32 = ME_SETS * OPP_SETS * 4096;
+const REST: u32 = OPP_SETS * 4096;
+pub const NUM_POSITIONS: u32 = ORBITS * REST;
+
+struct Orbits {
+    /// Per colex rank of my squares: its orbit number and a bitmask of the
+    /// symmetries mapping it to the orbit representative.
+    of_set: [(u32, u8); ME_SETS],
+    representative: Vec<u16>,
+}
+
+static ORBIT_TABLE: LazyLock<Orbits> = LazyLock::new(|| {
+    let mut of_set = [(0, 0); ME_SETS];
+    let mut orbit_of_rep = [u32::MAX; ME_SETS];
+    let mut representative = Vec::new();
+    for (r, set_orbit) in of_set.iter_mut().enumerate() {
+        let set = unrank3(r as u32);
+        let images: [u16; NUM_SYMS] = std::array::from_fn(|g| sym_bitboard(g, set));
+        let rep = *images.iter().min().unwrap();
+        let syms = (0..NUM_SYMS)
+            .filter(|&g| images[g] == rep)
+            .fold(0, |acc, g| acc | 1 << g);
+        let orbit = &mut orbit_of_rep[rank3(rep) as usize];
+        if *orbit == u32::MAX {
+            *orbit = representative.len() as u32;
+            representative.push(rep);
+        }
+        *set_orbit = (*orbit, syms);
+    }
+    assert_eq!(representative.len() as u32, ORBITS);
+    Orbits {
+        of_set,
+        representative,
+    }
+});
 
 /// Colex rank of a 3-element set given as a bitmask.
 fn rank3(set: u16) -> u32 {
@@ -69,26 +113,35 @@ fn expand(set: u16, taken: u16) -> u16 {
         .fold(0, |acc, (_, sq)| acc | 1 << sq)
 }
 
-pub fn index(s: &State) -> u32 {
-    debug_assert!(
-        s.step() == 0 && !s.is_terminal(),
-        "only turn-start positions are indexed"
-    );
+/// The board's index within its orbit class: opponent squares and facings.
+fn rest_index(s: &State) -> u32 {
     let me = s.pieces(s.side_to_move());
     let opp = s.pieces(s.side_to_move().other());
-    let sets = rank3(me) * OPP_SETS + rank3(compress(opp, me));
     let facings = squares(me)
         .chain(squares(opp))
         .fold(0, |acc, sq| acc << 2 | s.dir_at(sq) as u32);
-    sets * 4096 + facings
+    rank3(compress(opp, me)) * 4096 + facings
 }
 
-/// The position for `i`, with White as the side to move.
+/// The index of the board, ignoring how far into the turn the state is.
+pub fn index(s: &State) -> u32 {
+    debug_assert!(!s.is_terminal(), "only non-terminal boards are indexed");
+    let (orbit, syms) = ORBIT_TABLE.of_set[rank3(s.pieces(s.side_to_move())) as usize];
+    let rest = (0..NUM_SYMS)
+        .filter(|g| syms & (1 << g) != 0)
+        .map(|g| rest_index(&s.transformed(g)))
+        .min()
+        .unwrap();
+    orbit * REST + rest
+}
+
+/// The representative board for `i`, with White to move at step 0.
 pub fn from_index(i: u32) -> State {
     assert!(i < NUM_POSITIONS, "index {i} out of range");
-    let (sets, facings) = (i / 4096, i % 4096);
-    let me = unrank3(sets / OPP_SETS);
-    let opp = expand(unrank3(sets % OPP_SETS), me);
+    let (orbit, rest) = (i / REST, i % REST);
+    let me = ORBIT_TABLE.representative[orbit as usize];
+    let opp = expand(unrank3(rest / 4096), me);
+    let facings = rest % 4096;
     let mut s = State::from_pieces(&[], &[], Color::White);
     let colored = squares(me)
         .map(|sq| (sq, Color::White))
@@ -99,30 +152,48 @@ pub fn from_index(i: u32) -> State {
     s
 }
 
+/// Whether slot `i` is the index of some board. Slots that are not are the
+/// non-minimal variants of boards whose own squares are symmetric.
+pub fn is_canonical(i: u32) -> bool {
+    index(&from_index(i)) == i
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn table_size() {
-        assert_eq!(NUM_POSITIONS, 656_015_360);
+        assert_eq!(ORBIT_TABLE.representative.len(), 77);
+        assert_eq!(NUM_POSITIONS, 90_202_112);
     }
 
     #[test]
-    fn roundtrip() {
-        for i in (0..NUM_POSITIONS).step_by(9973) {
-            assert_eq!(index(&from_index(i)), i);
+    fn roundtrip_on_canonical_slots() {
+        let mut canonical = 0;
+        for i in (0..NUM_POSITIONS).step_by(997) {
+            if is_canonical(i) {
+                canonical += 1;
+                assert_eq!(index(&from_index(i)), i);
+            } else {
+                // A non-canonical slot still decodes to a board of a smaller slot.
+                assert!(index(&from_index(i)) < i);
+            }
         }
-        assert_eq!(index(&from_index(NUM_POSITIONS - 1)), NUM_POSITIONS - 1);
+        assert!(canonical > 0);
     }
 
     #[test]
-    fn colour_swap_shares_index() {
+    fn symmetric_and_colour_swapped_boards_share_index() {
         for s in State::start()
             .successors()
             .into_iter()
             .filter(|s| !s.is_terminal())
         {
+            let i = index(&s);
+            for g in 0..NUM_SYMS {
+                assert_eq!(index(&s.transformed(g)), i);
+            }
             let piece_list = |c| {
                 squares(s.pieces(c))
                     .map(|sq| (sq, s.dir_at(sq)))
@@ -133,8 +204,7 @@ mod tests {
                 &piece_list(Color::White),
                 Color::White,
             );
-            assert_eq!(index(&s), index(&swapped));
-            assert_eq!(from_index(index(&s)), swapped);
+            assert_eq!(index(&swapped), i);
         }
     }
 }
