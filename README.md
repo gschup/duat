@@ -33,16 +33,22 @@ copy from them.
 
 ## Result
 
-Duat is strongly solved under these rules: **the starting player wins**, in 45
-actions (15 full turns) against the longest defence. Of the 246M distinct
-states (by colour and board symmetry, at every step of a turn), 153M are wins
-for the side to move, 83M losses and 10M draws. The longest forced win takes
-178 actions.
+Duat has about 246 million distinct game states (counting positions that are
+mirror images, rotations or colour swaps of each other only once, and including
+the states partway through a turn); with perfect play the starting player
+always wins, and the best defence only delays the loss until the 15th turn
+(the winner's 8th), while the longest forced win from any position takes 61
+turns.
+
+Of those states, 153M are wins for the side to move, 83M losses and 10M draws.
+Distances count turns of both sides, the current turn included. Among equally
+good choices, the solver finishes the turn in the fewest actions, so it never
+stalls with three actions where one does the same.
 
 ## Usage
 
 ```sh
-cargo run --release -- solve   # solve all states (~30 s, ~4 GB RAM), write tables/duat.table.gz (~10 MB)
+cargo run --release -- solve   # solve all states (~30 s, ~4 GB RAM), write tables/duat.table.gz (~8 MB)
 cargo run --release -- line    # replay perfect play from the start using the table
 cargo run --release -- perft 3 # move-generator check: turn-level perft counts
 

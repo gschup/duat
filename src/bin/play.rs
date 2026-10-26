@@ -369,8 +369,8 @@ impl App {
             }
         }
         let value = match self.shown_advice().map(|(_, v)| v) {
-            Some(Value::Win(d)) => format!("perfect play: {mover:?} wins in {d} actions"),
-            Some(Value::Loss(d)) => format!("perfect play: {mover:?} loses in {d} actions"),
+            Some(Value::Win(d)) => format!("perfect play: {mover:?} wins in {d} turns"),
+            Some(Value::Loss(d)) => format!("perfect play: {mover:?} loses in {d} turns"),
             Some(Value::Draw) => "perfect play: draw".to_owned(),
             None => String::new(),
         };

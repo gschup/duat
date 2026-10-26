@@ -2,6 +2,7 @@
 //! a browser. Values in the middle of a turn are recomputed by searching the
 //! rest of the turn, which is at most two more actions deep.
 
+use std::cmp::Reverse;
 use std::io::{self, Read, Write};
 
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
@@ -11,9 +12,10 @@ use crate::index::{NUM_POSITIONS, index};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Value {
-    /// The side to move wins in this many actions (ending a turn counts).
+    /// The side to move wins in this many turns, the current one being turn 1
+    /// (turns of both sides count).
     Win(u16),
-    /// The side to move loses in this many actions.
+    /// The side to move loses in this many turns.
     Loss(u16),
     Draw,
 }
@@ -89,36 +91,60 @@ impl Table {
         if s.step() == 0 {
             return Value::decode(self.entries[index(s) as usize]);
         }
-        s.legal_actions()
-            .map(|a| self.value_after(s, a))
-            .max_by_key(|v| v.score())
-            .expect("no legal action")
+        self.search(s).0
     }
 
     /// The value of taking action `a` in `s`, for the side to move in `s`.
     pub fn value_after(&self, s: &State, a: Action) -> Value {
+        self.after(s, a).0
+    }
+
+    /// An optimal action: the fastest win, the slowest loss, or one keeping a
+    /// draw. Among equally good actions, it takes the one finishing the turn
+    /// in the fewest actions, so a single rotation beats three the other way.
+    pub fn best_action(&self, s: &State) -> Action {
+        s.legal_actions()
+            .max_by_key(|&a| preference(self.after(s, a)))
+            .expect("no legal action")
+    }
+
+    /// The value of a non-terminal state and the fewest actions that finish
+    /// the current turn while keeping that value.
+    fn search(&self, s: &State) -> (Value, u8) {
+        s.legal_actions()
+            .map(|a| self.after(s, a))
+            .max_by_key(|&o| preference(o))
+            .expect("no legal action")
+    }
+
+    /// Like [`Table::search`], for the state after action `a` in `s`.
+    fn after(&self, s: &State, a: Action) -> (Value, u8) {
         let mut c = *s;
         c.apply(a);
         if let Some(winner) = c.winner() {
-            return if winner == s.side_to_move() {
+            let v = if winner == s.side_to_move() {
                 Value::Win(1)
             } else {
                 Value::Loss(1)
             };
+            return (v, 1);
         }
-        match (self.value(&c), c.side_to_move() == s.side_to_move()) {
-            (Value::Win(d), true) | (Value::Loss(d), false) => Value::Win(d + 1),
-            (Value::Loss(d), true) | (Value::Win(d), false) => Value::Loss(d + 1),
-            (Value::Draw, _) => Value::Draw,
+        if c.side_to_move() == s.side_to_move() {
+            let (v, n) = self.search(&c);
+            return (v, n + 1);
         }
+        let v = match self.value(&c) {
+            Value::Win(d) => Value::Loss(d + 1),
+            Value::Loss(d) => Value::Win(d + 1),
+            Value::Draw => Value::Draw,
+        };
+        (v, 1)
     }
+}
 
-    /// An optimal action: the fastest win, the slowest loss, or one keeping a draw.
-    pub fn best_action(&self, s: &State) -> Action {
-        s.legal_actions()
-            .max_by_key(|&a| self.value_after(s, a).score())
-            .expect("no legal action")
-    }
+/// Better values first, then shorter turns.
+fn preference((v, n): (Value, u8)) -> (i32, Reverse<u8>) {
+    (v.score(), Reverse(n))
 }
 
 #[cfg(test)]

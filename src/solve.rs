@@ -2,15 +2,17 @@
 //!
 //! A table slot is `step * NUM_POSITIONS + index(board)`, so every state of a
 //! turn, not just turn starts, gets an exact value. Values are from the point
-//! of view of the side to move, and distances count single actions (including
-//! ending the turn) until the game ends with best play: the winner wins as
-//! fast as possible, the loser holds out as long as possible.
+//! of view of the side to move, and distances count turns until the game ends
+//! with best play, the current turn being turn 1: the winner wins as fast as
+//! possible, the loser holds out as long as possible.
 //!
 //! The solver first counts each state's distinct child slots and marks the
 //! states that can push an opponent off right away. It then works backwards
 //! level by level: a resolved state makes each parent a win if it is good for
 //! that parent's mover, and otherwise counts down the parent's remaining
-//! children, making it a loss when none are left. States never resolved are
+//! children, making it a loss when none are left. An action within a turn
+//! keeps the distance, so each level first resolves the earlier steps of the
+//! same turns and only then the turns before. States never resolved are
 //! draws: neither side can force a win.
 
 use std::sync::atomic::{AtomicU8, AtomicU16, Ordering::Relaxed};
@@ -152,10 +154,9 @@ pub fn solve(progress: impl Fn(u16, usize) + Sync) -> Solution {
         .flatten()
         .collect();
 
-    let mut depth = 1;
-    while !frontier.is_empty() {
-        progress(depth, frontier.len());
-        frontier = frontier
+    // Expands resolved states into the parents they resolve, at `depth`.
+    let expand = |children: &[u32], depth: u16| -> Vec<u32> {
+        children
             .par_iter()
             .fold(
                 || (Vec::new(), Vec::new()),
@@ -164,7 +165,7 @@ pub fn solve(progress: impl Fn(u16, usize) + Sync) -> Solution {
                     parent_slots(&state_at(child), &mut parents);
                     for &(p, same_mover) in &parents {
                         if update(&entries[p as usize], child_wins == same_mover) {
-                            dist[p as usize].store(depth + 1, Relaxed);
+                            dist[p as usize].store(depth, Relaxed);
                             resolved.push(p);
                         }
                     }
@@ -175,7 +176,27 @@ pub fn solve(progress: impl Fn(u16, usize) + Sync) -> Solution {
             .reduce(Vec::new, |mut a, b| {
                 a.extend(b);
                 a
-            });
+            })
+    };
+    let is_turn_start = |i: &u32| *i < NUM_POSITIONS;
+
+    let mut depth = 1;
+    while !frontier.is_empty() {
+        // Mid-turn states resolve the earlier steps of their turn at the same
+        // distance (steps only go down, so this ends within two rounds)...
+        let mut new: Vec<u32> = frontier.clone();
+        loop {
+            let mid_turn: Vec<u32> = new.into_iter().filter(|i| !is_turn_start(i)).collect();
+            new = expand(&mid_turn, depth);
+            if new.is_empty() {
+                break;
+            }
+            frontier.extend_from_slice(&new);
+        }
+        progress(depth, frontier.len());
+        // ...and then turn starts resolve the turns before, one turn farther.
+        let turn_starts: Vec<u32> = frontier.into_iter().filter(is_turn_start).collect();
+        frontier = expand(&turn_starts, depth + 1);
         depth += 1;
     }
 
@@ -232,9 +253,10 @@ impl Solution {
     }
 
     /// Checks `samples` pseudo-random states against their children: a win
-    /// must have a good child one action closer and none closer, a loss only
-    /// bad children with the farthest one action closer, and a draw no good
-    /// child but some drawn one. Returns the first inconsistent state.
+    /// must have a good child at its distance and none closer, a loss only bad
+    /// children with the farthest at its distance, and a draw no good child
+    /// but some drawn one. A child in the next turn is one turn closer.
+    /// Returns the first inconsistent state.
     pub fn verify(&self, samples: u64) -> Result<(), State> {
         (0..samples)
             .into_par_iter()
@@ -257,19 +279,21 @@ impl Solution {
                             continue;
                         }
                         let same_mover = c.side_to_move() == s.side_to_move();
+                        let turn = !same_mover as u16;
                         match (self.value(&c), same_mover) {
                             (Value::Win(d), true) | (Value::Loss(d), false) => {
+                                let d = d + turn;
                                 best_win = Some(best_win.map_or(d, |b| b.min(d)));
                             }
                             (Value::Loss(d), true) | (Value::Win(d), false) => {
-                                worst_loss = worst_loss.max(d);
+                                worst_loss = worst_loss.max(d + turn);
                             }
                             (Value::Draw, _) => any_draw = true,
                         }
                     }
                     match (self.value(&s), best_win) {
-                        (Value::Win(d), Some(b)) => d == b + 1,
-                        (Value::Loss(d), None) => !any_draw && d == worst_loss + 1,
+                        (Value::Win(d), Some(b)) => d == b,
+                        (Value::Loss(d), None) => !any_draw && d == worst_loss,
                         (Value::Draw, None) => any_draw,
                         _ => false,
                     }

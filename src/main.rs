@@ -30,7 +30,7 @@ fn run_perft(max_depth: u32) {
 fn run_solve(out: &Path) {
     let t = Instant::now();
     let solution = solve::solve(|depth, resolved| {
-        if depth % 10 == 1 {
+        if depth % 5 == 1 {
             println!(
                 "distance {depth:>4}: {resolved:>11} states  ({:.0?})",
                 t.elapsed()
