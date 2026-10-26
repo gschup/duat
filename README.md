@@ -68,3 +68,13 @@ to GitHub Pages via `.github/workflows/pages.yml`, which solves the game in CI.
   gzipped); mid-turn values come from searching the rest of the turn.
 - `src/bin/play.rs`: macroquad board for desktop and wasm; `web/` holds the
   page and the site build script.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option. This covers the code in this
+repository only, not the game *Duat* itself.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in this work by you, as defined in the Apache-2.0 license, shall
+be dual licensed as above, without any additional terms or conditions.
